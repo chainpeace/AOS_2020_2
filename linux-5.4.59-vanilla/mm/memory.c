@@ -105,6 +105,9 @@ EXPORT_SYMBOL(mem_map);
 void *high_memory;
 EXPORT_SYMBOL(high_memory);
 
+extern void kwrite_file(char * data);
+
+
 /*
  * Randomize the address space (stacks, mmaps, brk, etc.).
  *
@@ -3821,6 +3824,30 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
 static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 {
 	pte_t entry;
+	// ihhwang
+	//pte_t = pte_clear_flag(pte_t pte, _PAGE_PRESENT)
+
+
+	if(current && current->mm && current->mm->plmt_enable){
+		char mode;
+		char type;
+
+		if(vmf->flags & FAULT_FLAG_WRITE)
+			mode = 'w';
+		else
+			mode = 'r';
+
+		if(vmf->flags & FAULT_FLAG_INSTRUCTION)
+			type = 'i';
+		else 
+			type = 'd';
+
+		printk("prev page address : %lx", vmf->vma->vm_mm->prev_page_fault_address & PAGE_MASK);
+		printk("%lu : this page address : %lx, mode : %c, type : %c",++(vmf->vma->vm_mm->page_fault_cnt), 
+			vmf->address & PAGE_MASK, mode, type);
+		vmf->vma->vm_mm->prev_page_fault_address = vmf->address;	
+	}
+	//
 
 	if (unlikely(pmd_none(*vmf->pmd))) {
 		/*
@@ -3998,6 +4025,12 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		unsigned int flags)
 {
+	/*
+	if(current->mm->plmt_enable){
+		printk("comm : %s\n", current->comm);
+		printk("handle mm fault start. address : %lu\n", address);
+	}
+	*/
 	vm_fault_t ret;
 
 	__set_current_state(TASK_RUNNING);
