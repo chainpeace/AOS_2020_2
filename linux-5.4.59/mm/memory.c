@@ -80,6 +80,7 @@
 #include <asm/tlbflush.h>
 #include <asm/pgtable.h>
 
+
 #include "internal.h"
 
 //ihhwang
@@ -3854,10 +3855,21 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 			type = 'i';
 		else 
 			type = 'd';
+		
+		char *param, *param2;
+		param = kmalloc(sizeof(char)*500,GFP_KERNEL);
+		param2 = kmalloc(sizeof(char)*500,GFP_KERNEL);
 
-		printk("%lu : this page address : %lx, mode : %c, type : %c ----",++(vmf->vma->vm_mm->page_fault_cnt), 
-			vmf->address & PAGE_MASK, mode, type);
-		printk("prev page address : %lx", vmf->vma->vm_mm->prev_page_fault_address & PAGE_MASK);
+		sprintf(param, "%lu : this page address : %lx, mode : %c, type : %c ----",++(vmf->vma->vm_mm->page_fault_cnt), vmf->address & PAGE_MASK, mode, type);		
+		kwrite_file(param);
+		//printk("%lu : this page address : %lx, mode : %c, type : %c ----",++(vmf->vma->vm_mm->page_fault_cnt), vmf->address & PAGE_MASK, mode, type);
+		
+		sprintf(param2,"prev page address : %lx", vmf->vma->vm_mm->prev_page_fault_address & PAGE_MASK);
+		kwrite_file(param2);
+				
+		kfree(param);
+		kfree(param2);
+		//printk("prev page address : %lx", vmf->vma->vm_mm->prev_page_fault_address & PAGE_MASK);
 		vmf->vma->vm_mm->prev_page_fault_address = vmf->address;	
 	}
 	//
@@ -3899,10 +3911,14 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 	
 	if(enable_plmt){
-		printk("origianl pte : %lx", pte_val(vmf->orig_pte));
+		char *param = kmalloc(sizeof(char)*500, GFP_KERNEL);
+		char *param2 = kmalloc(sizeof(char)*500, GFP_KERNEL);
+		
+		sprintf(param, "origianl pte : %lx", pte_val(vmf->orig_pte));
+		kwrite_file(param);
 		if(vmf->pte){
-			printk("vmf->pte exist : %lx", pte_val(*vmf->pte));
-			
+			sprintf(param2, "vmf->pte exist : %lx", pte_val(*vmf->pte));
+			kwrite_file(param2);
 			if(is_pte_fake(*vmf->pte)){
 			
 				//*prev_pte = pte_set_flags(*prev_pte, _PAGE_PRESENT); // set present bit
@@ -3911,13 +3927,14 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 				
 				//current->mm->prev_page_fault_pte = prev_pte;
 
-				printk("^-- this is FAKE fault--^");
+				kwrite_file("^-- this is FAKE fault--^\n");
 				return VM_FAULT_MAJOR;
 			}
 		}else {
-			printk("vmf->pte not exist");
+			kwrite_file("vmf->pte not exist\n");
 		}
-		
+		kfree(param);
+		kfree(param2);
 	}
 
 	if (!vmf->pte) {
@@ -3926,7 +3943,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 
 			ret = do_anonymous_page(vmf);
 			if(enable_plmt){//ihhwang
-				printk("^-- this is anonymous page fault"); 
+				kwrite_file("^-- this is anonymous page fault\n"); 
 				//static inline void pte_free(struct mm_struct *mm, struct page *pte_page) //pgalloc.h
 				
 				if(prev_pte){
@@ -3942,7 +3959,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		else{	
 			ret = do_fault(vmf);
 			if(enable_plmt){
-				printk("^-- this is file mapped page fault"); //ihhwang
+				kwrite_file("^-- this is file mapped page fault\n"); //ihhwang
 				//static inline void pte_free(struct mm_struct *mm, struct page *pte_page) //pgalloc.h
 				
 				if(prev_pte){
@@ -3960,7 +3977,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	if (!pte_present(vmf->orig_pte)){
 		ret = do_swap_page(vmf);
 		if(enable_plmt){
-			printk("^-- this is swapped page fault"); //ihhwang
+			kwrite_file("^-- this is swapped page fault\n"); //ihhwang
 
 			if(prev_pte){
 			//*prev_pte = pte_clrpresent(*prev_pte);
@@ -3984,7 +4001,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		if (!pte_write(entry)){
 			ret = do_wp_page(vmf);
 			if(enable_plmt){
-				printk("^-- this is write protected page fault"); //ihhwang		
+				kwrite_file("^-- this is write protected page fault\n"); //ihhwang		
 				if(prev_pte){
 				//*prev_pte = pte_clrpresent(*prev_pte);
 				*prev_pte = pte_mkfake(*prev_pte);
@@ -4570,10 +4587,13 @@ void print_vma_addr(char *prefix, unsigned long ip)
 			p = file_path(f, buf, PAGE_SIZE);
 			if (IS_ERR(p))
 				p = "?";
-			printk("%s%s[%lx+%lx]", prefix, kbasename(p),
+			char *param = kmalloc(sizeof(char)*500, GFP_KERNEL);
+			sprintf(param, "%s%s[%lx+%lx]", prefix, kbasename(p),
 					vma->vm_start,
 					vma->vm_end - vma->vm_start);
+			kwrite_file(param);
 			free_page((unsigned long)buf);
+			kfree(param);
 		}
 	}
 	up_read(&mm->mmap_sem);
