@@ -82,6 +82,14 @@
 
 #include "internal.h"
 
+//ihhwang
+extern inline pte_t pte_mkfake(pte_t pte);
+extern inline pte_t pte_clrfake(pte_t pte);
+extern inline int is_pte_fake(pte_t pte);
+extern inline pte_t pte_clrpresent(pte_t pte);
+extern void kwrite_file(char *data);
+
+
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
 #warning Unfortunate NUMA and NUMA Balancing config, growing page-frame for last_cpupid.
 #endif
@@ -3615,7 +3623,7 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 			vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm,
 						       vmf->pmd,
 						       vmf->address,
-						       &vmf->ptl);
+						       &vmf->ptl); 
 			/*
 			 * Make sure this is not a temporary clearing of pte
 			 * by holding ptl and checking again. A R/M/W update
@@ -3821,6 +3829,38 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
 static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 {
 	pte_t entry;
+	
+	
+	// ihhwang
+	//pte_t = pte_clear_flag(pte_t pte, _PAGE_PRESENT)
+	//_PAGE_USER --> already in user space
+	//static inline pte_t pte_mknotpresent(pte_t pte)
+	vm_fault_t ret;
+	unsigned int enable_plmt = 0;
+	pte_t *prev_pte;
+
+	if(current && current->mm && current->mm->plmt_enable){
+		char mode;
+		char type;
+		enable_plmt = 1;
+		prev_pte = current->mm->prev_page_fault_pte;
+
+		if(vmf->flags & FAULT_FLAG_WRITE)
+			mode = 'w';
+		else
+			mode = 'r';
+
+		if(vmf->flags & FAULT_FLAG_INSTRUCTION)
+			type = 'i';
+		else 
+			type = 'd';
+
+		printk("%lu : this page address : %lx, mode : %c, type : %c ----",++(vmf->vma->vm_mm->page_fault_cnt), 
+			vmf->address & PAGE_MASK, mode, type);
+		printk("prev page address : %lx", vmf->vma->vm_mm->prev_page_fault_address & PAGE_MASK);
+		vmf->vma->vm_mm->prev_page_fault_address = vmf->address;	
+	}
+	//
 
 	if (unlikely(pmd_none(*vmf->pmd))) {
 		/*
@@ -3857,17 +3897,81 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 			vmf->pte = NULL;
 		}
 	}
+	
+	if(enable_plmt){
+		printk("origianl pte : %lx", pte_val(vmf->orig_pte));
+		if(vmf->pte){
+			printk("vmf->pte exist : %lx", pte_val(*vmf->pte));
+			
+			if(is_pte_fake(*vmf->pte)){
+			
+				//*prev_pte = pte_set_flags(*prev_pte, _PAGE_PRESENT); // set present bit
+				//*prev_pte = pte_mkpresent(*prev_pte);
+				*vmf->pte = pte_clrfake(*vmf->pte);
+				
+				//current->mm->prev_page_fault_pte = prev_pte;
 
-	if (!vmf->pte) {
-		if (vma_is_anonymous(vmf->vma))
-			return do_anonymous_page(vmf);
-		else
-			return do_fault(vmf);
+				printk("^-- this is FAKE fault--^");
+				return VM_FAULT_MAJOR;
+			}
+		}else {
+			printk("vmf->pte not exist");
+		}
+		
 	}
 
-	if (!pte_present(vmf->orig_pte))
-		return do_swap_page(vmf);
+	if (!vmf->pte) {
+		if (vma_is_anonymous(vmf->vma)){
+			
 
+			ret = do_anonymous_page(vmf);
+			if(enable_plmt){//ihhwang
+				printk("^-- this is anonymous page fault"); 
+				//static inline void pte_free(struct mm_struct *mm, struct page *pte_page) //pgalloc.h
+				
+				if(prev_pte){
+					//*prev_pte = pte_clrpresent(*prev_pte);
+					*prev_pte = pte_mkfake(*prev_pte);
+				}
+				current->mm->prev_page_fault_pte = vmf->pte;
+				//*vmf->pte = pte_mkfake(*vmf->pte);
+				//printk("pte value : %lx", pte_val(*vmf->pte))
+			}
+			return ret;
+		}
+		else{	
+			ret = do_fault(vmf);
+			if(enable_plmt){
+				printk("^-- this is file mapped page fault"); //ihhwang
+				//static inline void pte_free(struct mm_struct *mm, struct page *pte_page) //pgalloc.h
+				
+				if(prev_pte){
+					//*prev_pte = pte_clrpresent(*prev_pte);
+					*prev_pte = pte_mkfake(*prev_pte);
+				}
+				current->mm->prev_page_fault_pte = vmf->pte;
+				//*vmf->pte = pte_mkfake(*vmf->pte);
+				//printk("pte value : %lx", pte_val(*vmf->pte))
+			}
+			return ret;
+		}
+	}
+
+	if (!pte_present(vmf->orig_pte)){
+		ret = do_swap_page(vmf);
+		if(enable_plmt){
+			printk("^-- this is swapped page fault"); //ihhwang
+
+			if(prev_pte){
+			//*prev_pte = pte_clrpresent(*prev_pte);
+			*prev_pte = pte_mkfake(*prev_pte);
+			}
+			current->mm->prev_page_fault_pte = vmf->pte;
+			//*vmf->pte = pte_mkfake(*vmf->pte);
+			//printk("pte value : %lx", pte_val(*vmf->pte))
+		}
+		return ret;
+	}
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
 		return do_numa_page(vmf);
 
@@ -3877,8 +3981,20 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	if (unlikely(!pte_same(*vmf->pte, entry)))
 		goto unlock;
 	if (vmf->flags & FAULT_FLAG_WRITE) {
-		if (!pte_write(entry))
-			return do_wp_page(vmf);
+		if (!pte_write(entry)){
+			ret = do_wp_page(vmf);
+			if(enable_plmt){
+				printk("^-- this is write protected page fault"); //ihhwang		
+				if(prev_pte){
+				//*prev_pte = pte_clrpresent(*prev_pte);
+				*prev_pte = pte_mkfake(*prev_pte);
+				}
+				current->mm->prev_page_fault_pte = vmf->pte;
+				//*vmf->pte = pte_mkfake(*vmf->pte);
+				//printk("pte value : %lx", pte_val(*vmf->pte))
+			}
+			return ret;
+		}
 		entry = pte_mkdirty(entry);
 	}
 	entry = pte_mkyoung(entry);
@@ -3998,33 +4114,47 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		unsigned int flags)
 {
+	/*
+	if(current->mm->plmt_enable){
+		printk("comm : %s\n", current->comm);
+		printk("handle mm fault start. address : %lu\n", address);
+	}
+	*/
 	vm_fault_t ret;
-
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("handle_mm_fault start %lx", address);
 	__set_current_state(TASK_RUNNING);
-
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("set current state done");
 	count_vm_event(PGFAULT);
 	count_memcg_event_mm(vma->vm_mm, PGFAULT);
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("count event done");
 
 	/* do counter updates before entering really critical section. */
 	check_sync_rss_stat(current);
-
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("check rss stat done done");
 	if (!arch_vma_access_permitted(vma, flags & FAULT_FLAG_WRITE,
 					    flags & FAULT_FLAG_INSTRUCTION,
 					    flags & FAULT_FLAG_REMOTE))
 		return VM_FAULT_SIGSEGV;
-
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("arch vma access permitted done");
 	/*
 	 * Enable the memcg OOM handling for faults triggered in user
 	 * space.  Kernel faults are handled more gracefully.
 	 */
 	if (flags & FAULT_FLAG_USER)
 		mem_cgroup_enter_user_fault();
-
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("mem cgroup enter user fault done");
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
 	else
 		ret = __handle_mm_fault(vma, address, flags);
-
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("handle fault done");
 	if (flags & FAULT_FLAG_USER) {
 		mem_cgroup_exit_user_fault();
 		/*
@@ -4033,8 +4163,10 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		 * VM_FAULT_OOM), there is no need to kill anything.
 		 * Just clean up the OOM state peacefully.
 		 */
-		if (task_in_memcg_oom(current) && !(ret & VM_FAULT_OOM))
-			mem_cgroup_oom_synchronize(false);
+	// if(current && current->mm && current->mm->plmt_enable)
+	// 	printk("mem_cgroup exit done");
+	if (task_in_memcg_oom(current) && !(ret & VM_FAULT_OOM))
+		mem_cgroup_oom_synchronize(false);
 	}
 
 	return ret;

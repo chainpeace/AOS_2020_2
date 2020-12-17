@@ -526,11 +526,21 @@ struct mm_struct {
 		struct work_struct async_put_work;
 	} __randomize_layout;
 
+	//ihhwang
+	//unsigned long this_page_fault_address;
+	unsigned long prev_page_fault_address;
+	pte_t *prev_page_fault_pte;
+	unsigned int plmt_enable;
+	unsigned long page_fault_cnt; 
+	//
+	
 	/*
 	 * The mm_cpumask needs to be at the end of mm_struct, because it
 	 * is dynamically sized based on nr_cpu_ids.
 	 */
 	unsigned long cpu_bitmap[];
+
+
 };
 
 extern struct mm_struct init_mm;
