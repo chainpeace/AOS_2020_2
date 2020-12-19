@@ -41,10 +41,10 @@ index d62cd1d71098..ec8b7d74d765 100644
  	 * depend on TIF_32BIT which is only updated in flush_thread() on
  	 * some architectures like powerpc
 diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-index 270aa8fd2800..a85eff03d85b 100644
+index 270aa8fd2800..4f192a3b47df 100644
 --- a/include/linux/mm_types.h
 +++ b/include/linux/mm_types.h
-@@ -526,11 +526,21 @@ struct mm_struct {
+@@ -526,11 +526,22 @@ struct mm_struct {
  		struct work_struct async_put_work;
  	} __randomize_layout;
  
@@ -54,6 +54,7 @@ index 270aa8fd2800..a85eff03d85b 100644
 +	pte_t *prev_page_fault_pte;
 +	unsigned int plmt_enable;
 +	unsigned long page_fault_cnt; 
++	unsigned long plmt_status; //1 in exit, 0 in normal
 +	//
 +	
  	/*
@@ -68,10 +69,10 @@ index 270aa8fd2800..a85eff03d85b 100644
  extern struct mm_struct init_mm;
 diff --git a/include/linux/plmt.h b/include/linux/plmt.h
 new file mode 100644
-index 000000000000..d63ad7b40930
+index 000000000000..66ac0233a071
 --- /dev/null
 +++ b/include/linux/plmt.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,28 @@
 +#ifndef _LINUX_PLMT_H
 +#define _LINUX_PLMT_H
 +
@@ -80,6 +81,7 @@ index 000000000000..d63ad7b40930
 +
 +/// 9th bit  _PAGE_BIT_SOFTW1
 +#define PTE_FAKE_MASK _PAGE_SOFTW1
++#define PTE_FAKE_PRESENT_MASK _PAGE_SOFTW2
 +//#define PTE_FAKE_MASK (_AT(pteval_t, 1) << PTE_FAKE_BIT)
 +
 +char plmt_process_name[MAX_NAME_LEN];
@@ -88,6 +90,11 @@ index 000000000000..d63ad7b40930
 +inline pte_t pte_clrfake(pte_t pte);
 +inline int is_pte_fake(pte_t pte);
 +
++inline pte_t pte_mkfakepr(pte_t pte);
++inline pte_t pte_clrfakepr(pte_t pte);
++inline int is_pte_fakepr(pte_t pte);
++
++inline pte_t pte_mkpresent(pte_t pte);
 +inline pte_t pte_clrpresent(pte_t pte);
 +
 +long plmt_set_comm(const char __user *process_name);
@@ -122,12 +129,26 @@ index daad787fb795..ee7ebc9fc41b 100644
  
  obj-$(CONFIG_MODULES) += kmod.o
  obj-$(CONFIG_MULTIUSER) += groups.o
+diff --git a/kernel/exit.c b/kernel/exit.c
+index fa46977b9c07..0e957a7edb86 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -436,6 +436,9 @@ static void exit_mm(void)
+ {
+ 	struct mm_struct *mm = current->mm;
+ 	struct core_state *core_state;
++	
++	if(mm && mm->plmt_enable)//ihhwang
++		mm->plmt_status = 1;
+ 
+ 	exit_mm_release(current, mm);
+ 	if (!mm)
 diff --git a/kernel/plmt.c b/kernel/plmt.c
 new file mode 100644
-index 000000000000..aa4eea8f61f4
+index 000000000000..aeb337188fbf
 --- /dev/null
 +++ b/kernel/plmt.c
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,67 @@
 +#include <linux/syscalls.h>
 +#include <linux/plmt.h>
 +#include <asm/pgtable.h>
@@ -150,7 +171,25 @@ index 000000000000..aa4eea8f61f4
 +    else 
 +        return 0;
 +}
-+//inline pte_t pte_mkpresent(pte_t pte){}
++
++inline pte_t pte_mkfakepr(pte_t pte){
++
++    return pte_set_flags(pte, PTE_FAKE_PRESENT_MASK);
++}
++inline pte_t pte_clrfakepr(pte_t pte){
++    return pte_clear_flags(pte, PTE_FAKE_PRESENT_MASK);
++}
++inline int is_pte_fakepr(pte_t pte){
++    if(native_pte_val(pte) & PTE_FAKE_PRESENT_MASK)
++        return 1;
++    else 
++        return 0;
++}
++
++inline pte_t pte_mkpresent(pte_t pte){
++
++    return pte_set_flags(pte, _PAGE_PRESENT);
++}
 +inline pte_t pte_clrpresent(pte_t pte){
 +
 +    return pte_clear_flags(pte, _PAGE_PRESENT);
@@ -179,10 +218,10 @@ index 000000000000..aa4eea8f61f4
 +}
 \ No newline at end of file
 diff --git a/mm/memory.c b/mm/memory.c
-index cb7c940cf800..d829aa381e85 100644
+index cb7c940cf800..0600fbfa6e48 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
-@@ -82,6 +82,14 @@
+@@ -82,6 +82,18 @@
  
  #include "internal.h"
  
@@ -190,6 +229,10 @@ index cb7c940cf800..d829aa381e85 100644
 +extern inline pte_t pte_mkfake(pte_t pte);
 +extern inline pte_t pte_clrfake(pte_t pte);
 +extern inline int is_pte_fake(pte_t pte);
++extern inline pte_t pte_mkfakepr(pte_t pte);
++extern inline pte_t pte_clrfakepr(pte_t pte);
++extern inline int is_pte_fakepr(pte_t pte);
++extern inline pte_t pte_mkpresent(pte_t pte);
 +extern inline pte_t pte_clrpresent(pte_t pte);
 +
 +
@@ -197,7 +240,56 @@ index cb7c940cf800..d829aa381e85 100644
  #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
  #warning Unfortunate NUMA and NUMA Balancing config, growing page-frame for last_cpupid.
  #endif
-@@ -3615,7 +3623,7 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
+@@ -574,6 +586,12 @@ static void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
+ struct page *vm_normal_page(struct vm_area_struct *vma, unsigned long addr,
+ 			    pte_t pte)
+ {
++	// if(vma->vm_mm && vma->vm_mm->plmt_enable && vma->vm_mm->plmt_status == 1){//ihhwang
++	// 	//printk("vm normal page start: pte : %lx", pte_val(pte));
++	// 	// if(is_pte_fake(pte))
++	// 	// 	pte = pte_clrfake(pte);
++	// 	//printk("vm normal page after pte clrfake: pte : %lx", pte_val(pte));
++	// }
+ 	unsigned long pfn = pte_pfn(pte);
+ 
+ 	if (IS_ENABLED(CONFIG_ARCH_HAS_PTE_SPECIAL)) {
+@@ -1029,6 +1047,15 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 		if (need_resched())
+ 			break;
+ 
++		if(mm->plmt_enable && mm->plmt_status == 1){//ihhwang
++			printk("in zap_pte_range: original pte : %lx", pte_val(ptent));
++			if(is_pte_fake(ptent)){
++				*pte = pte_clrfake(*pte);
++				*pte = pte_mkpresent(*pte);
++				ptent = *pte;
++			}
++		}
++			
+ 		if (pte_present(ptent)) {
+ 			struct page *page;
+ 
+@@ -1070,6 +1097,9 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 			continue;
+ 		}
+ 
++		if(mm->plmt_enable && mm->plmt_status == 1)
++			printk("in zap_pte_range: pte not present");
++
+ 		entry = pte_to_swp_entry(ptent);
+ 		if (non_swap_entry(entry) && is_device_private_entry(entry)) {
+ 			struct page *page = device_private_entry_to_page(entry);
+@@ -1092,6 +1122,9 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 			continue;
+ 		}
+ 
++		if(mm->plmt_enable && mm->plmt_status == 1)
++			printk("in zap_pte_range: other");
++
+ 		/* If details->check_mapping, we leave swap entries. */
+ 		if (unlikely(details))
+ 			continue;
+@@ -3615,7 +3648,7 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
  			vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm,
  						       vmf->pmd,
  						       vmf->address,
@@ -206,7 +298,7 @@ index cb7c940cf800..d829aa381e85 100644
  			/*
  			 * Make sure this is not a temporary clearing of pte
  			 * by holding ptl and checking again. A R/M/W update
-@@ -3821,6 +3829,38 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
+@@ -3821,6 +3854,38 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
  static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
  {
  	pte_t entry;
@@ -245,7 +337,7 @@ index cb7c940cf800..d829aa381e85 100644
  
  	if (unlikely(pmd_none(*vmf->pmd))) {
  		/*
-@@ -3857,17 +3897,81 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
+@@ -3857,17 +3922,89 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
  			vmf->pte = NULL;
  		}
  	}
@@ -259,8 +351,15 @@ index cb7c940cf800..d829aa381e85 100644
 +			
 +				//*prev_pte = pte_set_flags(*prev_pte, _PAGE_PRESENT); // set present bit
 +				//*prev_pte = pte_mkpresent(*prev_pte);
++				if(prev_pte){
++					*prev_pte = pte_clrpresent(*prev_pte);
++					*prev_pte = pte_mkfake(*prev_pte);
++				}
++				current->mm->prev_page_fault_pte = vmf->pte;
++
++				//handling fake pte fault
++				*vmf->pte = pte_mkpresent(*vmf->pte); 
 +				*vmf->pte = pte_clrfake(*vmf->pte);
-+				
 +				//current->mm->prev_page_fault_pte = prev_pte;
 +
 +				printk("^-- this is FAKE fault--^");
@@ -286,10 +385,11 @@ index cb7c940cf800..d829aa381e85 100644
 +				//static inline void pte_free(struct mm_struct *mm, struct page *pte_page) //pgalloc.h
 +				
 +				if(prev_pte){
-+					//*prev_pte = pte_clrpresent(*prev_pte);
++					*prev_pte = pte_clrpresent(*prev_pte);
 +					*prev_pte = pte_mkfake(*prev_pte);
 +				}
 +				current->mm->prev_page_fault_pte = vmf->pte;
++				
 +				//*vmf->pte = pte_mkfake(*vmf->pte);
 +				//printk("pte value : %lx", pte_val(*vmf->pte))
 +			}
@@ -302,7 +402,7 @@ index cb7c940cf800..d829aa381e85 100644
 +				//static inline void pte_free(struct mm_struct *mm, struct page *pte_page) //pgalloc.h
 +				
 +				if(prev_pte){
-+					//*prev_pte = pte_clrpresent(*prev_pte);
++					*prev_pte = pte_clrpresent(*prev_pte);
 +					*prev_pte = pte_mkfake(*prev_pte);
 +				}
 +				current->mm->prev_page_fault_pte = vmf->pte;
@@ -321,7 +421,7 @@ index cb7c940cf800..d829aa381e85 100644
 +			printk("^-- this is swapped page fault"); //ihhwang
  
 +			if(prev_pte){
-+			//*prev_pte = pte_clrpresent(*prev_pte);
++			*prev_pte = pte_clrpresent(*prev_pte);
 +			*prev_pte = pte_mkfake(*prev_pte);
 +			}
 +			current->mm->prev_page_fault_pte = vmf->pte;
@@ -333,7 +433,7 @@ index cb7c940cf800..d829aa381e85 100644
  	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
  		return do_numa_page(vmf);
  
-@@ -3877,8 +3981,20 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
+@@ -3877,8 +4014,20 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
  	if (unlikely(!pte_same(*vmf->pte, entry)))
  		goto unlock;
  	if (vmf->flags & FAULT_FLAG_WRITE) {
@@ -344,7 +444,7 @@ index cb7c940cf800..d829aa381e85 100644
 +			if(enable_plmt){
 +				printk("^-- this is write protected page fault"); //ihhwang		
 +				if(prev_pte){
-+				//*prev_pte = pte_clrpresent(*prev_pte);
++				*prev_pte = pte_clrpresent(*prev_pte);
 +				*prev_pte = pte_mkfake(*prev_pte);
 +				}
 +				current->mm->prev_page_fault_pte = vmf->pte;
@@ -356,7 +456,7 @@ index cb7c940cf800..d829aa381e85 100644
  		entry = pte_mkdirty(entry);
  	}
  	entry = pte_mkyoung(entry);
-@@ -3998,33 +4114,47 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
+@@ -3998,33 +4147,47 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
  vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
  		unsigned int flags)
  {
@@ -410,7 +510,7 @@ index cb7c940cf800..d829aa381e85 100644
  	if (flags & FAULT_FLAG_USER) {
  		mem_cgroup_exit_user_fault();
  		/*
-@@ -4033,8 +4163,10 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+@@ -4033,8 +4196,10 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
  		 * VM_FAULT_OOM), there is no need to kill anything.
  		 * Just clean up the OOM state peacefully.
  		 */
